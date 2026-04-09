@@ -1,0 +1,443 @@
+import random
+import copy
+from typing import List, Tuple, Set, Optional, Dict
+from dataclasses import dataclass
+from enum import Enum
+
+
+class Direction(Enum):
+    UP = (-1, 0)
+    DOWN = (1, 0)
+    LEFT = (0, -1)
+    RIGHT = (0, 1)
+
+
+@dataclass
+class Wall:
+    """Represents a wall between two adjacent cells."""
+    cell1: Tuple[int, int]
+    cell2: Tuple[int, int]
+    
+    def __hash__(self):
+        return hash(frozenset([self.cell1, self.cell2]))
+    
+    def __eq__(self, other):
+        return {self.cell1, self.cell2} == {other.cell1, other.cell2}
+
+
+class ZipPuzzle:
+    """
+    Zip Puzzle Game - Connect numbered cells in sequence, filling the entire grid.
+    
+    Rules:
+    - Start from cell 1 and end at the highest numbered cell
+    - Visit all cells exactly once
+    - Move only to adjacent cells (up, down, left, right)
+    - Cannot cross walls
+    - Must pass through numbered cells in order
+    """
+    
+    def __init__(self, height: int = 5, width: int = 5):
+        self.height = height
+        self.width = width
+        self.grid: List[List[Optional[int]]] = [[None] * width for _ in range(height)]
+        self.walls: Set[Wall] = set()
+        self.path: List[Tuple[int, int]] = []
+        self.numbered_cells: Dict[int, Tuple[int, int]] = {}
+        self.max_number = 0
+        self.solution_path: List[Tuple[int, int]] = []
+        
+    def generate_puzzle(self, num_hints: int = 4, num_walls: int = 3) -> bool:
+        """Generate a new puzzle with a guaranteed solution."""
+        self.grid = [[None] * self.width for _ in range(self.height)]
+        self.walls = set()
+        self.numbered_cells = {}
+        self.path = []
+        
+        # Generate a valid Hamiltonian path first
+        solution = self._generate_hamiltonian_path()
+        if not solution:
+            return False
+        
+        self.solution_path = solution
+        total_cells = self.height * self.width
+        self.max_number = total_cells
+        
+        # Place start (1) and end (max) numbers
+        self.numbered_cells[1] = solution[0]
+        self.numbered_cells[total_cells] = solution[-1]
+        self.grid[solution[0][0]][solution[0][1]] = 1
+        self.grid[solution[-1][0]][solution[-1][1]] = total_cells
+        
+        # Place intermediate hint numbers
+        hint_positions = random.sample(range(1, total_cells - 1), min(num_hints - 2, total_cells - 2))
+        for pos in hint_positions:
+            row, col = solution[pos]
+            number = pos + 1
+            self.numbered_cells[number] = (row, col)
+            self.grid[row][col] = number
+        
+        # Add walls that don't block the solution
+        self._add_walls(num_walls, solution)
+        
+        return True
+    
+    def _generate_hamiltonian_path(self) -> Optional[List[Tuple[int, int]]]:
+        """Generate a random Hamiltonian path through the grid."""
+        all_cells = [(r, c) for r in range(self.height) for c in range(self.width)]
+        
+        # Try multiple starting positions
+        for _ in range(100):
+            start = random.choice(all_cells)
+            path = self._dfs_hamiltonian(start, {start}, [start])
+            if path and len(path) == len(all_cells):
+                return path
+        return None
+    
+    def _dfs_hamiltonian(self, current: Tuple[int, int], visited: Set[Tuple[int, int]], 
+                          path: List[Tuple[int, int]]) -> Optional[List[Tuple[int, int]]]:
+        """DFS to find Hamiltonian path."""
+        if len(path) == self.height * self.width:
+            return path
+        
+        neighbors = self._get_neighbors(current)
+        random.shuffle(neighbors)
+        
+        for neighbor in neighbors:
+            if neighbor not in visited:
+                visited.add(neighbor)
+                path.append(neighbor)
+                result = self._dfs_hamiltonian(neighbor, visited, path)
+                if result:
+                    return result
+                path.pop()
+                visited.remove(neighbor)
+        
+        return None
+    
+    def _get_neighbors(self, cell: Tuple[int, int], respect_walls: bool = False) -> List[Tuple[int, int]]:
+        """Get valid adjacent cells."""
+        row, col = cell
+        neighbors = []
+        
+        for direction in Direction:
+            dr, dc = direction.value
+            new_row, new_col = row + dr, col + dc
+            
+            if 0 <= new_row < self.height and 0 <= new_col < self.width:
+                if respect_walls:
+                    wall = Wall(cell, (new_row, new_col))
+                    if wall not in self.walls:
+                        neighbors.append((new_row, new_col))
+                else:
+                    neighbors.append((new_row, new_col))
+        
+        return neighbors
+    
+    def _add_walls(self, num_walls: int, solution: List[Tuple[int, int]]) -> None:
+        """Add walls that don't block the solution path."""
+        # Create set of solution edges
+        solution_edges = set()
+        for i in range(len(solution) - 1):
+            solution_edges.add(frozenset([solution[i], solution[i + 1]]))
+        
+        # Find all possible wall positions
+        possible_walls = []
+        for row in range(self.height):
+            for col in range(self.width):
+                for neighbor in self._get_neighbors((row, col)):
+                    edge = frozenset([(row, col), neighbor])
+                    if edge not in solution_edges:
+                        possible_walls.append(Wall((row, col), neighbor))
+        
+        # Remove duplicates
+        possible_walls = list(set(possible_walls))
+        random.shuffle(possible_walls)
+        
+        # Add walls
+        for wall in possible_walls[:num_walls]:
+            self.walls.add(wall)
+    
+    def move(self, cell: Tuple[int, int]) -> Tuple[bool, str]:
+        """
+        Attempt to move to a cell.
+        Returns (success, message).
+        """
+        row, col = cell
+        
+        # Validate cell is in bounds
+        if not (0 <= row < self.height and 0 <= col < self.width):
+            return False, "Cell out of bounds"
+        
+        # If path is empty, must start at cell 1
+        if not self.path:
+            if self.grid[row][col] != 1:
+                return False, "Must start at cell 1"
+            self.path.append(cell)
+            return True, "Started at 1"
+        
+        # Check if cell is already in path
+        if cell in self.path:
+            # Allow clicking previous cell to undo
+            if len(self.path) >= 2 and cell == self.path[-2]:
+                self.path.pop()
+                return True, "Undid last move"
+            return False, "Cell already visited"
+        
+        # Check if cell is adjacent to last cell
+        last_cell = self.path[-1]
+        if cell not in self._get_neighbors(last_cell, respect_walls=True):
+            return False, "Can only move to adjacent cells (no walls)"
+        
+        # Check numbered cell sequence
+        cell_value = self.grid[row][col]
+        if cell_value is not None:
+            expected_next = self._get_next_required_number()
+            if cell_value != expected_next:
+                return False, f"Must visit {expected_next} before {cell_value}"
+        
+        self.path.append(cell)
+        return True, "Moved successfully"
+    
+    def _get_next_required_number(self) -> Optional[int]:
+        """Get the next numbered cell that must be visited."""
+        visited_numbers = set()
+        for cell in self.path:
+            value = self.grid[cell[0]][cell[1]]
+            if value is not None:
+                visited_numbers.add(value)
+        
+        for num in sorted(self.numbered_cells.keys()):
+            if num not in visited_numbers:
+                return num
+        return None
+    
+    def undo(self) -> bool:
+        """Undo the last move."""
+        if len(self.path) > 0:
+            self.path.pop()
+            return True
+        return False
+    
+    def reset(self) -> None:
+        """Reset the current path."""
+        self.path = []
+    
+    def is_complete(self) -> bool:
+        """Check if puzzle is solved."""
+        # Must visit all cells
+        if len(self.path) != self.height * self.width:
+            return False
+        
+        # Must end at max number
+        last_cell = self.path[-1]
+        if self.grid[last_cell[0]][last_cell[1]] != self.max_number:
+            return False
+        
+        return True
+    
+    def get_hint(self) -> Optional[Tuple[int, int]]:
+        """Get a hint for the next move based on solution."""
+        if not self.path:
+            return self.solution_path[0]
+        
+        current_len = len(self.path)
+        if current_len < len(self.solution_path):
+            # Check if current path matches solution
+            if self.path == self.solution_path[:current_len]:
+                return self.solution_path[current_len]
+        
+        return None
+    
+    def display(self) -> str:
+        """Return a string representation of the puzzle."""
+        # Create display grid
+        cell_width = 4
+        lines = []
+        
+        # Top border
+        top_border = "┌" + "───┬" * (self.width - 1) + "───┐"
+        lines.append(top_border)
+        
+        for row in range(self.height):
+            # Cell content row
+            cell_line = "│"
+            for col in range(self.width):
+                cell = (row, col)
+                
+                # Determine cell content
+                if cell in self.path:
+                    path_idx = self.path.index(cell) + 1
+                    if self.grid[row][col] is not None:
+                        content = f"[{self.grid[row][col]}]"
+                    else:
+                        content = f" {path_idx:2d}"
+                elif self.grid[row][col] is not None:
+                    content = f" {self.grid[row][col]:2d}"
+                else:
+                    content = "   "
+                
+                cell_line += content
+                
+                # Right border or wall
+                if col < self.width - 1:
+                    wall = Wall((row, col), (row, col + 1))
+                    if wall in self.walls:
+                        cell_line += "┃"
+                    else:
+                        cell_line += "│"
+                else:
+                    cell_line += "│"
+            
+            lines.append(cell_line)
+            
+            # Bottom border for this row
+            if row < self.height - 1:
+                border_line = "├"
+                for col in range(self.width):
+                    wall = Wall((row, col), (row + 1, col))
+                    if wall in self.walls:
+                        border_line += "═══"
+                    else:
+                        border_line += "───"
+                    
+                    if col < self.width - 1:
+                        border_line += "┼"
+                    else:
+                        border_line += "┤"
+                lines.append(border_line)
+        
+        # Bottom border
+        bottom_border = "└" + "───┴" * (self.width - 1) + "───┘"
+        lines.append(bottom_border)
+        
+        return "\n".join(lines)
+
+
+class ZipGame:
+    """Interactive game controller for Zip Puzzle."""
+    
+    def __init__(self):
+        self.puzzle: Optional[ZipPuzzle] = None
+        self.moves_count = 0
+    
+    def new_game(self, height: int = 5, width: int = 5, hints: int = 4, walls: int = 3) -> bool:
+        """Start a new game."""
+        self.puzzle = ZipPuzzle(height, width)
+        success = self.puzzle.generate_puzzle(num_hints=hints, num_walls=walls)
+        self.moves_count = 0
+        return success
+    
+    def play(self) -> None:
+        """Main game loop."""
+        print("\n" + "=" * 50)
+        print("    ZIP PUZZLE - LinkedIn Style")
+        print("=" * 50)
+        print("\nRules:")
+        print("• Start from 1 and end at the highest number")
+        print("• Visit ALL cells exactly once")
+        print("• Move to adjacent cells (up/down/left/right)")
+        print("• Cannot cross thick walls (═══ or ┃)")
+        print("• Visit numbered cells in sequence")
+        print("\nCommands:")
+        print("  [row] [col] - Move to cell (0-indexed)")
+        print("  u           - Undo last move")
+        print("  r           - Reset puzzle")
+        print("  h           - Get hint")
+        print("  s           - Show solution")
+        print("  n           - New puzzle")
+        print("  q           - Quit")
+        print("=" * 50)
+        
+        if not self.new_game():
+            print("Failed to generate puzzle. Try again.")
+            return
+        
+        while True:
+            print("\n" + self.puzzle.display())
+            print(f"\nPath length: {len(self.puzzle.path)}/{self.puzzle.height * self.puzzle.width}")
+            print(f"Moves: {self.moves_count}")
+            
+            if self.puzzle.is_complete():
+                print("\n🎉 CONGRATULATIONS! Puzzle solved! 🎉")
+                print(f"Completed in {self.moves_count} moves")
+                
+                cmd = input("\nPlay again? (y/n): ").strip().lower()
+                if cmd == 'y':
+                    if not self.new_game():
+                        print("Failed to generate puzzle.")
+                        return
+                    continue
+                else:
+                    print("Thanks for playing!")
+                    break
+            
+            cmd = input("\nEnter command: ").strip().lower()
+            
+            if cmd == 'q':
+                print("Thanks for playing!")
+                break
+            elif cmd == 'u':
+                if self.puzzle.undo():
+                    print("Undid last move")
+                else:
+                    print("Nothing to undo")
+            elif cmd == 'r':
+                self.puzzle.reset()
+                self.moves_count = 0
+                print("Puzzle reset")
+            elif cmd == 'h':
+                hint = self.puzzle.get_hint()
+                if hint:
+                    print(f"Hint: Try moving to cell ({hint[0]}, {hint[1]})")
+                else:
+                    print("No hint available - your path may have diverged from solution")
+            elif cmd == 's':
+                print("\nSolution path:")
+                for i, cell in enumerate(self.puzzle.solution_path):
+                    value = self.puzzle.grid[cell[0]][cell[1]]
+                    if value:
+                        print(f"  Step {i+1}: ({cell[0]}, {cell[1]}) = [{value}]")
+                    else:
+                        print(f"  Step {i+1}: ({cell[0]}, {cell[1]})")
+            elif cmd == 'n':
+                print("\nPuzzle size options:")
+                print("  1. Easy (4x4)")
+                print("  2. Medium (5x5)")
+                print("  3. Hard (6x6)")
+                choice = input("Choose (1-3, or Enter for medium): ").strip()
+                
+                if choice == '1':
+                    success = self.new_game(4, 4, hints=3, walls=2)
+                elif choice == '3':
+                    success = self.new_game(6, 6, hints=5, walls=4)
+                else:
+                    success = self.new_game(5, 5, hints=4, walls=3)
+                
+                if not success:
+                    print("Failed to generate puzzle. Trying again...")
+                    self.new_game()
+            else:
+                # Try to parse as coordinates
+                try:
+                    parts = cmd.split()
+                    if len(parts) == 2:
+                        row, col = int(parts[0]), int(parts[1])
+                        success, message = self.puzzle.move((row, col))
+                        print(message)
+                        if success:
+                            self.moves_count += 1
+                    else:
+                        print("Invalid input. Use 'row col' format (e.g., '2 3')")
+                except ValueError:
+                    print("Invalid input. Enter coordinates or a command.")
+
+
+def main():
+    """Entry point."""
+    game = ZipGame()
+    game.play()
+
+
+if __name__ == "__main__":
+    main()
